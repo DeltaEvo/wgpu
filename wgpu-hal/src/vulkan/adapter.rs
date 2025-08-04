@@ -1891,7 +1891,7 @@ impl super::Adapter {
             }
         };
         let memory_types = &mem_properties.memory_types_as_slice();
-        let valid_ash_memory_types = memory_types.iter().enumerate().fold(0, |u, (i, mem)| {
+        let _valid_ash_memory_types = memory_types.iter().enumerate().fold(0, |u, (i, mem)| {
             if self.known_memory_flags.contains(mem.property_flags) {
                 u | (1 << i)
             } else {
@@ -2184,87 +2184,26 @@ impl super::Adapter {
             signal_semaphores: Default::default(),
         };
 
-        let mem_allocator = {
-            let limits = self.phd_capabilities.properties.limits;
-
-            // Note: the parameters here are not set in stone nor where they picked with
-            // strong confidence.
-            // `final_free_list_chunk` should be bigger than starting_free_list_chunk if
-            // we want the behavior of starting with smaller block sizes and using larger
-            // ones only after we observe that the small ones aren't enough, which I think
-            // is a good "I don't know what the workload is going to be like" approach.
-            //
-            // For reference, `VMA`, and `gpu_allocator` both start with 256 MB blocks
-            // (then VMA doubles the block size each time it needs a new block).
-            // At some point it would be good to experiment with real workloads
-            //
-            // TODO(#5925): The plan is to switch the Vulkan backend from `gpu_alloc` to
-            // `gpu_allocator` which has a different (simpler) set of configuration options.
-            //
-            // TODO: These parameters should take hardware capabilities into account.
-            let mb = 1024 * 1024;
-            let perf_cfg = gpu_alloc::Config {
-                starting_free_list_chunk: 128 * mb,
-                final_free_list_chunk: 512 * mb,
-                minimal_buddy_size: 1,
-                initial_buddy_dedicated_size: 8 * mb,
-                dedicated_threshold: 32 * mb,
-                preferred_dedicated_threshold: mb,
-                transient_dedicated_threshold: 128 * mb,
-            };
-            let mem_usage_cfg = gpu_alloc::Config {
-                starting_free_list_chunk: 8 * mb,
-                final_free_list_chunk: 64 * mb,
-                minimal_buddy_size: 1,
-                initial_buddy_dedicated_size: 8 * mb,
-                dedicated_threshold: 8 * mb,
-                preferred_dedicated_threshold: mb,
-                transient_dedicated_threshold: 16 * mb,
-            };
-            let config = match memory_hints {
-                wgt::MemoryHints::Performance => perf_cfg,
-                wgt::MemoryHints::MemoryUsage => mem_usage_cfg,
-                wgt::MemoryHints::Manual {
-                    suballocated_device_memory_block_size,
-                } => gpu_alloc::Config {
-                    starting_free_list_chunk: suballocated_device_memory_block_size.start,
-                    final_free_list_chunk: suballocated_device_memory_block_size.end,
-                    initial_buddy_dedicated_size: suballocated_device_memory_block_size.start,
-                    ..perf_cfg
-                },
-            };
-
-            let max_memory_allocation_size =
-                if let Some(maintenance_3) = self.phd_capabilities.maintenance_3 {
-                    maintenance_3.max_memory_allocation_size
-                } else {
-                    u64::MAX
-                };
-            let properties = gpu_alloc::DeviceProperties {
-                max_memory_allocation_count: limits.max_memory_allocation_count,
-                max_memory_allocation_size,
-                non_coherent_atom_size: limits.non_coherent_atom_size,
-                memory_types: memory_types
-                    .iter()
-                    .map(|memory_type| gpu_alloc::MemoryType {
-                        props: gpu_alloc::MemoryPropertyFlags::from_bits_truncate(
-                            memory_type.property_flags.as_raw() as u8,
-                        ),
-                        heap: memory_type.heap_index,
-                    })
-                    .collect(),
-                memory_heaps: mem_properties
-                    .memory_heaps_as_slice()
-                    .iter()
-                    .map(|&memory_heap| gpu_alloc::MemoryHeap {
-                        size: memory_heap.size,
-                    })
-                    .collect(),
-                buffer_device_address: enabled_extensions
-                    .contains(&khr::buffer_device_address::NAME),
-            };
-            gpu_alloc::GpuAllocator::new(config, properties)
+        let allocation_sizes = match memory_hints {
+            wgt::MemoryHints::Performance => Default::default(),
+            wgt::MemoryHints::MemoryUsage => Default::default(),
+            wgt::MemoryHints::Manual {
+                suballocated_device_memory_block_size: _,
+            } => Default::default(),
         };
+
+        let buffer_device_address = enabled_extensions.contains(&khr::buffer_device_address::NAME);
+
+        let mem_allocator =
+            gpu_allocator::vulkan::Allocator::new(&gpu_allocator::vulkan::AllocatorCreateDesc {
+                instance: self.instance.raw.clone(),
+                device: shared.raw.clone(),
+                physical_device: self.raw,
+                debug_settings: Default::default(),
+                buffer_device_address,
+                allocation_sizes,
+            })?;
+
         let desc_allocator = gpu_descriptor::DescriptorAllocator::new(
             if let Some(di) = self.phd_capabilities.descriptor_indexing {
                 di.max_update_after_bind_descriptors_in_all_pools
@@ -2277,7 +2216,6 @@ impl super::Adapter {
             shared,
             mem_allocator: Mutex::new(mem_allocator),
             desc_allocator: Mutex::new(desc_allocator),
-            valid_ash_memory_types,
             naga_options,
             #[cfg(feature = "renderdoc")]
             render_doc: Default::default(),
