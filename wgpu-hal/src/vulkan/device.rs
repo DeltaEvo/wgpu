@@ -1046,11 +1046,6 @@ impl crate::Device for super::Device {
                 unsafe { self.shared.raw.destroy_buffer(raw, None) };
             })?;
 
-        // FIXME: Remove this
-        if let Some(slice) = allocation.mapped_slice_mut() {
-            slice.fill(0);
-        }
-
         unsafe {
             self.shared
                 .raw
